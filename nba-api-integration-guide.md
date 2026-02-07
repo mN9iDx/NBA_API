@@ -1,126 +1,133 @@
-# NBA API Integration Guide
+# NBA API — Oddsfield Integration Guide
 
-> **Audience**: AI agents or developers integrating this library into another project.
-> **Source repo**: <https://github.com/swar/nba_api> — version **1.11.3**
+> **For**: Another AI integrating this into the Oddsfield sports betting dashboard.
+> **Repo**: Local clone of [`swar/nba_api`](https://github.com/swar/nba_api) v1.11.3
 
 ---
 
-## 1. Architecture Overview
+## 1. Is this the standard `nba_api` pip package, or custom code?
 
-| Attribute | Value |
-|---|---|
-| **Language** | Python 3.10+ |
-| **Package type** | Pure-Python client library (not a web server) |
-| **Data source** | Official NBA.com APIs — no API key, no RapidAPI |
-| **HTTP layer** | `requests` library with persistent `Session` pooling |
-| **Build system** | Poetry (`pyproject.toml`) |
-| **License** | MIT |
+**This IS the `nba_api` pip package itself.** This repo is the source code for it.
 
-The library wraps **two distinct NBA backends**:
+```
+pip install nba_api   # installs exactly this code
+```
 
-| Backend | Base URL | Purpose |
+It is **not** a wrapper around the pip package. It **is** the pip package. There is no custom application code, no web server, no database. It is a pure client library that makes HTTP GET requests to two NBA.com backends:
+
+| Backend | Base URL | Use case |
 |---|---|---|
-| **Stats API** | `https://stats.nba.com/stats/{endpoint}` | Historical / tabular data (140+ endpoints) |
-| **Live API** | `https://cdn.nba.com/static/json/liveData/{endpoint}` | Real-time game data (4 endpoints) |
+| **Stats API** | `https://stats.nba.com/stats/{endpoint}` | Historical/tabular data, date-specific scoreboards |
+| **Live API** | `https://cdn.nba.com/static/json/liveData/{endpoint}` | Real-time today's scores, live box scores, play-by-play |
 
-There is also an offline **static data** module for player/team lookups that requires no network calls.
+The library adds value over raw HTTP in these ways:
+- Browser-mimicking headers (NBA.com blocks requests without them)
+- `requests.Session` pooling (reused across calls)
+- Proxy rotation support (pass a list, one is randomly picked per request)
+- 140+ endpoint classes with typed parameters
+- Response parsing into dicts, JSON, or pandas DataFrames
+- Offline static data for team/player lookups (no network call)
+- V3 endpoint parsers that flatten nested JSON into tabular format
+
+**No authentication required.** No API keys, no tokens, no OAuth. The NBA.com APIs are public.
 
 ---
 
-## 2. Authentication
+## 2. Exact code to get today's live scoreboard
 
-**None.** The NBA.com APIs are public. The library authenticates by sending browser-like headers:
+### The call
 
 ```python
-# Stats API headers (src/nba_api/stats/library/http.py)
-STATS_HEADERS = {
-    "Host": "stats.nba.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Referer": "https://stats.nba.com/",
-    "Pragma": "no-cache",
-    "Cache-Control": "no-cache",
-    "Sec-Ch-Ua": '"Chromium";v="140", "Google Chrome";v="140", "Not;A=Brand";v="24"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Fetch-Dest": "empty",
-}
-
-# Live API headers (src/nba_api/live/nba/library/http.py)
-STATS_HEADERS = {
-    "Host": "cdn.nba.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Connection": "keep-alive",
-}
-```
-
-All endpoints accept optional `proxy`, `headers`, and `timeout` parameters to override defaults.
-
----
-
-## 3. Dependencies
-
-From `pyproject.toml`:
-
-```
-requests   >=2.32.3, <3.0.0    # HTTP client (required)
-numpy      >=1.26.0             # Array handling (required; >=2.1.0 for Python 3.13+)
-pandas     >=2.1.0              # DataFrame support (required; >=2.2.0 for Python 3.12+)
-```
-
-Dev-only: `pytest`, `pytest-cov`, `flake8`, `pylint`, `isort`, `python-semantic-release`.
-
-Install:
-```bash
-pip install nba_api
-```
-
----
-
-## 4. Key Endpoints & Functions
-
-### 4.1 Live API — Real-Time Game Data
-
-All live endpoints are in `nba_api.live.nba.endpoints`.
-
-#### 4.1.1 `ScoreBoard` — Today's Games / Live Scoreboard
-
-**This is the primary endpoint for getting current game scores, status, and clock.**
-
-```python
-# src/nba_api/live/nba/endpoints/scoreboard.py
-
 from nba_api.live.nba.endpoints import ScoreBoard
 
-class ScoreBoard(Endpoint):
-    endpoint_url = "scoreboard/todaysScoreboard_00.json"
-
-    def __init__(self, proxy=None, headers=None, timeout=30, get_request=True):
-        ...
+scoreboard = ScoreBoard()  # fetches immediately, no params needed
+games = scoreboard.games.get_dict()  # list of game dicts
 ```
 
-**No parameters required** — automatically returns today's games.
+That's it. One import, one constructor, one accessor. Under the hood this hits:
+```
+GET https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json
+```
 
-**Attributes after fetch:**
-- `score_board_date` — string, e.g. `"2026-02-07"`
-- `games` — `DataSet` containing a list of game dicts
+### Parsing every field Oddsfield needs
 
-**Access methods:**
 ```python
+from nba_api.live.nba.endpoints import ScoreBoard
+import re
+
 scoreboard = ScoreBoard()
-scoreboard.games.get_dict()   # list of game dicts
-scoreboard.games.get_json()   # JSON string
-scoreboard.get_dict()         # full raw response dict
-scoreboard.get_json()         # full raw response JSON
+
+for game in scoreboard.games.get_dict():
+
+    # --- GAME STATUS ---
+    # gameStatus is the integer you branch on:
+    #   1 = not started (upcoming)
+    #   2 = in progress (live)
+    #   3 = final
+    status_int = game["gameStatus"]          # 1, 2, or 3
+    status_text = game["gameStatusText"]     # "7:00 pm ET", "Q3 05:22", "Half", "Final", "Final/OT"
+
+    # Halftime detection — there is NO dedicated status code for halftime.
+    # It shows up as gameStatus=2 with gameStatusText containing "Half".
+    is_halftime = (status_int == 2 and "Half" in status_text)
+
+    # --- SCORES ---
+    home_score = game["homeTeam"]["score"]   # int, 0 before tipoff
+    away_score = game["awayTeam"]["score"]   # int, 0 before tipoff
+
+    # Per-quarter scores:
+    # game["homeTeam"]["periods"] -> [{"period": 1, "periodType": "REGULAR", "score": 28}, ...]
+    # Empty list before tipoff.
+
+    # --- QUARTER / PERIOD ---
+    period = game["period"]                  # int: 1-4 = Q1-Q4, 5 = OT1, 6 = OT2, etc.
+                                             # 0 before tipoff
+
+    # --- GAME CLOCK ---
+    raw_clock = game["gameClock"]            # "PT05M22.00S" during play
+                                             # "" (empty string) before tipoff
+                                             # "PT00M00.00S" at end of period/game
+
+    # Parse to minutes:seconds
+    def parse_clock(clock_str):
+        """Parse 'PT05M22.00S' -> '5:22'. Returns '' for empty/pre-game."""
+        if not clock_str:
+            return ""
+        m = re.match(r"PT(\d+)M([\d.]+)S", clock_str)
+        if not m:
+            return ""
+        mins = int(m.group(1))
+        secs = int(float(m.group(2)))
+        return f"{mins}:{secs:02d}"
+
+    clock_display = parse_clock(raw_clock)   # "5:22" or ""
+
+    # --- TEAM IDENTIFIERS ---
+    # Every game gives you ALL THREE forms for both teams:
+    home_id      = game["homeTeam"]["teamId"]       # 1610612738 (int)
+    home_tricode = game["homeTeam"]["teamTricode"]   # "BOS" (3-letter string)
+    home_name    = game["homeTeam"]["teamName"]      # "Celtics"
+    home_city    = game["homeTeam"]["teamCity"]       # "Boston"
+
+    away_id      = game["awayTeam"]["teamId"]
+    away_tricode = game["awayTeam"]["teamTricode"]
+    away_name    = game["awayTeam"]["teamName"]
+    away_city    = game["awayTeam"]["teamCity"]
+
+    # --- GAME ID (for drill-down to box score / play-by-play) ---
+    game_id = game["gameId"]                 # "0022500780"
+
+    # --- OTHER USEFUL FIELDS ---
+    game_time_utc = game["gameTimeUTC"]      # "2026-02-07T00:30:00Z"
+    game_time_et  = game["gameEt"]           # "2026-02-06T19:30:00-05:00"
+    home_record   = f"{game['homeTeam']['wins']}-{game['homeTeam']['losses']}"
+    away_record   = f"{game['awayTeam']['wins']}-{game['awayTeam']['losses']}"
 ```
 
-**Example response payload** (single game from `scoreboard.games.get_dict()`):
+### What the raw response looks like
+
+Here is the exact structure of one game object from `scoreboard.games.get_dict()`, taken from the `expected_data` schema in `src/nba_api/live/nba/endpoints/scoreboard.py:7-78`:
+
 ```json
 {
     "gameId": "0022500780",
@@ -194,848 +201,259 @@ scoreboard.get_json()         # full raw response JSON
 }
 ```
 
-**Game status codes:**
-| `gameStatus` | `gameStatusText` examples | Meaning |
-|---|---|---|
-| `1` | `"7:30 pm ET"`, `"Pre Game"` | Not started / upcoming |
-| `2` | `"Q1 08:44"`, `"Q3 05:22"`, `"Half"`, `"OT1 03:15"` | In progress |
-| `3` | `"Final"`, `"Final/OT"` | Completed |
-
-**Game clock format:** ISO 8601 duration — `"PT05M22.00S"` = 5 minutes, 22 seconds remaining.
-
-**Period values:**
-| `period` | Meaning |
-|---|---|
-| `1`–`4` | Q1–Q4 |
-| `5` | OT1 |
-| `6` | OT2 |
-| `7+` | Additional overtimes |
+For a **pre-game** (gameStatus=1) game, the differences are:
+- `gameStatus`: `1`
+- `gameStatusText`: `"7:00 pm ET"` (tip-off time as a display string)
+- `period`: `0`
+- `gameClock`: `""` (empty string)
+- `score`: `0` on both teams
+- `periods`: `[]` (empty list) on both teams
+- `gameLeaders`: all fields are `0` / `""` / `null`
+- `inBonus`: `null`
+- `timeoutsRemaining`: `0`
 
 ---
 
-#### 4.1.2 `BoxScore` — Detailed Game Stats
+## 3. How to match NBA games to external data sources
+
+The live scoreboard gives you **three identifiers per team** on every game object:
+
+| Field | Example | Best for matching to... |
+|---|---|---|
+| `teamId` | `1610612738` | NBA's internal ID. Stable across seasons. **Best primary key for NBA-to-NBA joins.** |
+| `teamTricode` | `"BOS"` | 3-letter code. **Best for matching to sportsbooks/odds APIs** which almost universally use tricodes. |
+| `teamName` | `"Celtics"` | Nickname only (not city). Useful for display. |
+| `teamCity` | `"Boston"` | City only. |
+
+**For Oddsfield, use `teamTricode` to match games to odds feeds.** It's the most universal cross-platform identifier. Most sportsbook APIs (DraftKings, FanDuel, BetMGM, etc.) use the same 3-letter codes.
+
+If you need to convert between them offline (no network call):
 
 ```python
-# src/nba_api/live/nba/endpoints/boxscore.py
-
-from nba_api.live.nba.endpoints import BoxScore
-
-class BoxScore(Endpoint):
-    endpoint_url = "boxscore/boxscore_{game_id}.json"
-
-    def __init__(self, game_id, proxy=None, headers=None, timeout=30, get_request=True):
-        ...
-```
-
-**Required parameter:** `game_id` (string, e.g. `"0022500180"`)
-
-**Attributes after fetch:**
-- `game` — full game DataSet
-- `game_details` — game metadata (status, clock, arena, etc.) without team data
-- `arena` — arena info DataSet
-- `officials` — officials list DataSet
-- `home_team` — home team DataSet (includes players + statistics)
-- `home_team_player_stats` — home player stats DataSet
-- `home_team_stats` — home team aggregate stats DataSet
-- `away_team` — away team DataSet
-- `away_team_player_stats` — away player stats DataSet
-- `away_team_stats` — away team aggregate stats DataSet
-
-**Example usage:**
-```python
-box = BoxScore(game_id="0022500180")
-
-# Game metadata
-details = box.game_details.get_dict()
-# details["gameStatus"]       -> 3
-# details["gameStatusText"]   -> "Final"
-# details["period"]           -> 4
-# details["gameClock"]        -> "PT00M00.00S"
-
-# Team scores
-home = box.home_team_stats.get_dict()
-# home["teamName"]  -> "Celtics"
-# home["score"]     -> 124
-# home["statistics"]["points"] -> 124
-
-# Individual player stats
-players = box.home_team_player_stats.get_dict()
-# players[0]["name"]                         -> "Jaylen Brown"
-# players[0]["statistics"]["points"]         -> 21
-# players[0]["statistics"]["assists"]        -> 8
-# players[0]["statistics"]["reboundsTotal"]  -> 2
-```
-
-**Player statistics fields** (per player in `statistics` dict):
-`assists`, `blocks`, `blocksReceived`, `fieldGoalsAttempted`, `fieldGoalsMade`, `fieldGoalsPercentage`, `foulsOffensive`, `foulsDrawn`, `foulsPersonal`, `foulsTechnical`, `freeThrowsAttempted`, `freeThrowsMade`, `freeThrowsPercentage`, `minus`, `minutes` (ISO 8601), `minutesCalculated`, `plus`, `plusMinusPoints`, `points`, `pointsFastBreak`, `pointsInThePaint`, `pointsSecondChance`, `reboundsDefensive`, `reboundsOffensive`, `reboundsTotal`, `steals`, `threePointersAttempted`, `threePointersMade`, `threePointersPercentage`, `turnovers`, `twoPointersAttempted`, `twoPointersMade`, `twoPointersPercentage`
-
----
-
-#### 4.1.3 `PlayByPlay` — Play-by-Play Events
-
-```python
-# src/nba_api/live/nba/endpoints/playbyplay.py
-
-from nba_api.live.nba.endpoints import PlayByPlay
-
-class PlayByPlay(Endpoint):
-    endpoint_url = "playbyplay/playbyplay_{game_id}.json"
-
-    def __init__(self, game_id, proxy=None, headers=None, timeout=30, get_request=True):
-        ...
-```
-
-**Required parameter:** `game_id`
-
-**Attributes after fetch:**
-- `actions` — DataSet of play-by-play events
-
-**Example action object:**
-```json
-{
-    "actionNumber": 4,
-    "clock": "PT11M58.00S",
-    "timeActual": "2021-01-16T00:40:31.3Z",
-    "period": 1,
-    "periodType": "REGULAR",
-    "teamId": 1610612738,
-    "teamTricode": "BOS",
-    "actionType": "jumpball",
-    "subType": "recovered",
-    "descriptor": "startperiod",
-    "qualifiers": [],
-    "personId": 1629684,
-    "x": null,
-    "y": null,
-    "possession": 1610612738,
-    "scoreHome": "0",
-    "scoreAway": "0",
-    "isFieldGoal": 0,
-    "description": "Jump Ball T. Thompson vs. N. Vucevic: Tip to G. Williams"
-}
-```
-
-Common `actionType` values: `"jumpball"`, `"2pt"`, `"3pt"`, `"freethrow"`, `"turnover"`, `"rebound"`, `"foul"`, `"substitution"`, `"timeout"`, `"violation"`, `"stoppage"`, `"period"`.
-
----
-
-#### 4.1.4 `Odds` — Betting Odds
-
-```python
-# src/nba_api/live/nba/endpoints/odds.py
-
-from nba_api.live.nba.endpoints import Odds
-
-class Odds(Endpoint):
-    endpoint_url = "odds/odds_todaysGames.json"
-
-    def __init__(self, proxy=None, headers=None, timeout=30, get_request=True):
-        ...
-```
-
-**No parameters required.** Despite the URL name, returns odds for all available games (not just today's).
-
-**Attributes after fetch:**
-- `games` — DataSet of game odds
-
-**Example game odds object:**
-```json
-{
-    "gameId": "0022500780",
-    "sr_id": "",
-    "srMatchId": "",
-    "homeTeamId": "1610612739",
-    "awayTeamId": "1610612738",
-    "markets": [
-        {
-            "name": "Moneyline",
-            "odds_type_id": 1,
-            "group_name": "...",
-            "books": [
-                {
-                    "id": "espn",
-                    "name": "ESPN",
-                    "outcomes": [
-                        {"type": "home", "odds": "-150", "opening_odds": "-145", "odds_trend": ""},
-                        {"type": "away", "odds": "+130", "opening_odds": "+125", "odds_trend": ""}
-                    ],
-                    "url": "",
-                    "countryCode": ""
-                }
-            ]
-        }
-    ]
-}
-```
-
----
-
-### 4.2 Stats API — Historical / Detailed Data
-
-All stats endpoints are in `nba_api.stats.endpoints`. Every endpoint follows the same pattern:
-
-```python
-from nba_api.stats.endpoints import EndpointName
-
-result = EndpointName(required_param="value", optional_param="value")
-
-# All endpoints expose:
-result.get_dict()              # raw response dict
-result.get_json()              # raw response JSON string
-result.get_normalized_dict()   # normalized dict (V2 endpoints only)
-result.get_data_frames()       # list of DataFrames for all datasets
-
-# Named dataset attributes (varies per endpoint):
-result.dataset_name.get_dict()
-result.dataset_name.get_json()
-result.dataset_name.get_data_frame()  # requires pandas
-```
-
-#### 4.2.1 `ScoreboardV3` — Date-Specific Scoreboard (RECOMMENDED over V2)
-
-```python
-# src/nba_api/stats/endpoints/scoreboardv3.py
-
-from nba_api.stats.endpoints import ScoreboardV3
-
-class ScoreboardV3(Endpoint):
-    endpoint = "scoreboardv3"
-
-    def __init__(
-        self,
-        game_date,                    # Required: "YYYY-MM-DD"
-        league_id=LeagueID.default,   # "00" for NBA
-        proxy=None, headers=None, timeout=30, get_request=True,
-    ):
-        ...
-```
-
-**DataSets available:**
-| Attribute | Description | Key columns |
-|---|---|---|
-| `scoreboard_info` | Date and league metadata | `gameDate`, `leagueId`, `leagueName` |
-| `game_header` | Core game info for each game | `gameId`, `gameCode`, `gameStatus`, `gameStatusText`, `period`, `gameClock`, `gameTimeUTC`, `gameEt`, `regulationPeriods`, `seriesGameNumber`, `gameLabel`, `seriesText` |
-| `line_score` | Team scores and records (2 rows per game) | `gameId`, `teamId`, `teamCity`, `teamName`, `teamTricode`, `wins`, `losses`, `score`, `inBonus`, `timeoutsRemaining` |
-| `game_leaders` | Top performers per game | `gameId`, `teamId`, `leaderType`, `personId`, `name`, `jerseyNum`, `position`, `teamTricode`, `points`, `rebounds`, `assists` |
-| `team_leaders` | Season leaders per team | same as game_leaders + `seasonLeadersFlag` |
-| `broadcasters` | TV/radio/streaming info | `gameId`, `broadcasterType`, `broadcasterId`, `broadcastDisplay`, `broadcasterTeamId` |
-
-**Example usage:**
-```python
-from nba_api.stats.endpoints import ScoreboardV3
-
-scoreboard = ScoreboardV3(game_date="2026-02-07")
-
-# Get all games as a DataFrame
-games_df = scoreboard.game_header.get_data_frame()
-scores_df = scoreboard.line_score.get_data_frame()
-leaders_df = scoreboard.game_leaders.get_data_frame()
-```
-
----
-
-#### 4.2.2 Complete Stats Endpoint Catalog
-
-Below is every stats endpoint file, grouped by category. All accept `proxy`, `headers`, `timeout`, `get_request` in addition to their specific parameters.
-
-**Scoreboard & Schedule:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `ScoreboardV3` | `game_date` | Day's games, scores, status (RECOMMENDED) |
-| `ScoreboardV2` | `game_date` | Legacy scoreboard (DEPRECATED — broken for 2025-26) |
-| `ScheduleLeagueV2` | `season` | Full season schedule |
-| `ScheduleLeagueV2Int` | `season` | International schedule |
-
-**Player Stats:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `CommonPlayerInfo` | `player_id` | Player bio and career info |
-| `PlayerCareerStats` | `player_id` | Career stats by season |
-| `PlayerGameLog` | `player_id`, `season` | Game-by-game stats |
-| `PlayerGameLogs` | `player_id`, `season` | Alternate game logs |
-| `PlayerProfileV2` | `player_id` | Comprehensive profile |
-| `PlayerDashboardByGeneralSplits` | `player_id`, `season` | Stats by split type |
-| `PlayerDashboardByGameSplits` | `player_id`, `season` | Stats by game segment |
-| `PlayerDashboardByClutch` | `player_id`, `season` | Clutch stats |
-| `PlayerDashboardByLastNGames` | `player_id`, `season` | Last N games |
-| `PlayerDashboardByShootingSplits` | `player_id`, `season` | Shooting breakdown |
-| `PlayerDashboardByTeamPerformance` | `player_id`, `season` | By team performance |
-| `PlayerDashboardByYearOverYear` | `player_id`, `season` | Year-over-year |
-| `PlayerDashPtPass` | `player_id`, `season` | Passing tracking |
-| `PlayerDashPtReb` | `player_id`, `season` | Rebounding tracking |
-| `PlayerDashPtShots` | `player_id`, `season` | Shot tracking |
-| `PlayerDashPtShotDefend` | `player_id`, `season` | Defensive shot tracking |
-| `PlayerAwards` | `player_id` | Awards history |
-| `PlayerCompare` | `player_id_list`, `vs_player_id_list` | Head-to-head compare |
-| `PlayerEstimatedMetrics` | `season` | Estimated advanced metrics |
-| `PlayerFantasyProfileBarGraph` | `player_id`, `season` | Fantasy stats |
-| `PlayerGameStreakFinder` | `player_id` | Game streak finder |
-| `PlayerIndex` | `season` | Player index listing |
-| `PlayerNextNGames` | `player_id` | Upcoming games |
-| `PlayerVsPlayer` | `player_id`, `vs_player_id` | Player vs player |
-| `PlayerCareerByCollege` | `college` | Players by college |
-| `PlayerCareerByCollegeRollup` | — | College rollup |
-| `CommonAllPlayers` | `season` | All players for season |
-
-**Team Stats:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `CommonTeamRoster` | `team_id`, `season` | Roster with height/weight/position |
-| `TeamGameLog` | `team_id`, `season` | Team game-by-game |
-| `TeamGameLogs` | `team_id`, `season` | Alternate team game logs |
-| `TeamDashboardByGeneralSplits` | `team_id`, `season` | Team stats by split |
-| `TeamDashboardByShootingSplits` | `team_id`, `season` | Team shooting splits |
-| `TeamDashLineups` | `team_id`, `season` | Lineup combinations |
-| `TeamDashPtPass` | `team_id`, `season` | Team passing tracking |
-| `TeamDashPtReb` | `team_id`, `season` | Team rebounding tracking |
-| `TeamDashPtShots` | `team_id`, `season` | Team shot tracking |
-| `TeamDetails` | `team_id` | Team info and history |
-| `TeamEstimatedMetrics` | `season` | Team estimated metrics |
-| `TeamHistoricalLeaders` | `team_id` | All-time team leaders |
-| `TeamInfoCommon` | `team_id` | Common team info |
-| `TeamPlayerDashboard` | `team_id`, `season` | Player dashboard for team |
-| `TeamPlayerOnOffDetails` | `team_id`, `season` | On/off court details |
-| `TeamPlayerOnOffSummary` | `team_id`, `season` | On/off court summary |
-| `TeamVsPlayer` | `team_id`, `vs_player_id` | Team vs player |
-| `TeamYearByYearStats` | `team_id` | Year-by-year history |
-| `TeamGameStreakFinder` | `team_id` | Team streak finder |
-| `TeamAndPlayersVsPlayers` | `team_id` | Team + players vs players |
-
-**League / Standings:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `LeagueStandings` | `season`, `league_id` | League standings |
-| `LeagueStandingsV3` | `season`, `league_id` | V3 standings (RECOMMENDED) |
-| `LeagueLeaders` | `season`, `stat_category` | Stat leaders |
-| `LeagueGameFinder` | various filters | Search games with complex filters |
-| `LeagueGameLog` | `season` | All games in a season |
-| `LeagueDashPlayerStats` | `season` | All player stats |
-| `LeagueDashTeamStats` | `season` | All team stats |
-| `LeagueDashLineups` | `season` | League lineup data |
-| `LeagueDashPlayerClutch` | `season` | Clutch player stats |
-| `LeagueDashTeamClutch` | `season` | Clutch team stats |
-| `LeagueDashPlayerBioStats` | `season` | Bio/physical stats |
-| `LeagueDashPlayerShotLocations` | `season` | Shot location data |
-| `LeagueDashTeamShotLocations` | `season` | Team shot locations |
-| `LeagueDashPlayerPtShot` | `season` | Player shot tracking |
-| `LeagueDashTeamPtShot` | `season` | Team shot tracking |
-| `LeagueDashOppPtShot` | `season` | Opponent shot tracking |
-| `LeagueDashPtStats` | `season` | Tracking stats |
-| `LeagueDashPtDefend` | `season` | Defensive tracking |
-| `LeagueDashPtTeamDefend` | `season` | Team defensive tracking |
-| `LeagueHustleStatsPlayer` | `season` | Hustle stats (players) |
-| `LeagueHustleStatsTeam` | `season` | Hustle stats (teams) |
-| `LeagueLineupViz` | `season` | Lineup visualization |
-| `LeaguePlayerOnDetails` | `season` | On-court details |
-| `LeagueSeasonMatchups` | `season` | Matchup data |
-| `ISTStandings` | `season` | In-Season Tournament standings |
-| `PlayoffPicture` | `season` | Playoff race |
-
-**Box Score Endpoints (multiple versions):**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `BoxScoreTraditionalV2` / `V3` | `game_id` | Standard box score |
-| `BoxScoreAdvancedV2` / `V3` | `game_id` | Advanced stats (OffRtg, DefRtg, etc.) |
-| `BoxScoreMiscV2` / `V3` | `game_id` | Miscellaneous stats |
-| `BoxScoreFourFactorsV2` / `V3` | `game_id` | Four Factors analysis |
-| `BoxScoreScoringV2` / `V3` | `game_id` | Scoring breakdown |
-| `BoxScoreUsageV2` / `V3` | `game_id` | Usage rates |
-| `BoxScoreDefensiveV2` | `game_id` | Defensive stats |
-| `BoxScoreHustleV2` | `game_id` | Hustle stats |
-| `BoxScoreMatchupsV3` | `game_id` | Matchup data |
-| `BoxScorePlayerTrackV3` | `game_id` | Player tracking data |
-| `BoxScoreSummaryV2` / `V3` | `game_id` | Game summary |
-| `HustleStatsBoxScore` | `game_id` | Hustle box score |
-
-**Play-by-Play:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `PlayByPlayV3` | `game_id` | Play-by-play events (RECOMMENDED) |
-| `PlayByPlayV2` | `game_id` | Legacy PBP (DEPRECATED — returns empty) |
-| `PlayByPlay` | `game_id` | Oldest version |
-
-**Shot Charts:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `ShotChartDetail` | `player_id`, `team_id`, `game_id`, `season` | Shot-level data with x/y coordinates |
-| `ShotChartLeagueWide` | `season` | League-wide shot distribution |
-| `ShotChartLineupDetail` | `group_id`, `season` | Lineup shot data |
-
-**Draft:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `DraftHistory` | `season` | Draft picks |
-| `DraftBoard` | `season` | Draft board |
-| `DraftCombineStats` | `season` | Combine stats |
-| `DraftCombinePlayerAnthro` | `season` | Physical measurements |
-| `DraftCombineDrillResults` | `season` | Drill results |
-| `DraftCombineSpotShooting` | `season` | Spot shooting |
-| `DraftCombineNonStationaryShooting` | `season` | Moving shooting |
-
-**Advanced & Specialty:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `SynergyPlayTypes` | `season` | Play type analysis |
-| `WinProbabilityPBP` | `game_id` | Win probability per play |
-| `GameRotation` | `game_id` | Rotation/substitution data |
-| `MatchupsRollup` | `season` | Matchup statistics |
-| `AllTimeLeadersGrids` | — | All-time stat leaders |
-| `AssistLeaders` | `season` | Assist leaders |
-| `AssistTracker` | `season` | Assist tracking |
-| `DunkScoreLeaders` | `season` | Dunk score leaders |
-| `GravityLeaders` | `season` | Gravity metric leaders |
-| `FranchiseHistory` | — | Franchise history |
-| `FranchiseLeaders` | `team_id` | Franchise stat leaders |
-| `FranchisePlayers` | `team_id` | Franchise players |
-| `FantasyWidget` | `season` | Fantasy data |
-| `CumeStatsPlayer` | `player_id`, `game_ids` | Cumulative player stats |
-| `CumeStatsTeam` | `team_id`, `game_ids` | Cumulative team stats |
-| `DefenseHub` | `season` | Defensive hub stats |
-| `HomepageLeaders` | `season` | Homepage leader data |
-| `HomepageV2` | `season` | Homepage data |
-| `LeadersTiles` | `season` | Leader tiles |
-| `InfographicFanDuelPlayer` | `game_id` | FanDuel infographic |
-
-**Video:**
-| Endpoint Class | Key Parameters | Description |
-|---|---|---|
-| `VideoDetails` | `game_id`, `player_id` | Video clip metadata |
-| `VideoDetailsAsset` | `game_id` | Video asset URLs |
-| `VideoEvents` | `game_id` | Video event markers |
-| `VideoEventsAsset` | `game_id` | Video event assets |
-| `VideoStatus` | `game_date` | Video availability |
-
----
-
-### 4.3 Static Data — Offline Team & Player Lookups
-
-No network calls required. Data is bundled in the package.
-
-#### Teams
-
-```python
-# src/nba_api/stats/static/teams.py
-
 from nba_api.stats.static import teams
 
-# All 30 NBA teams
-teams.get_teams()
-# Returns: [{"id": 1610612738, "full_name": "Boston Celtics", "abbreviation": "BOS",
-#            "nickname": "Celtics", "city": "Boston", "state": "Massachusetts",
-#            "year_founded": 1946}, ...]
+# tricode -> ID
+celtics = teams.find_team_by_abbreviation("BOS")
+# Returns: {"id": 1610612738, "full_name": "Boston Celtics",
+#           "abbreviation": "BOS", "nickname": "Celtics",
+#           "city": "Boston", "state": "Massachusetts", "year_founded": 1946}
 
-# Lookup functions (all accept regex patterns unless noted)
-teams.find_team_by_abbreviation("BOS")         # exact match -> single dict or None
-teams.find_team_name_by_id(1610612738)          # exact match -> single dict or None
-teams.find_teams_by_full_name("Celtics")        # regex -> list of dicts
-teams.find_teams_by_city("Boston")              # regex -> list of dicts
-teams.find_teams_by_nickname("Celtics")         # regex -> list of dicts
-teams.find_teams_by_state("Massachusetts")      # regex -> list of dicts
-teams.find_teams_by_year_founded(1946)          # exact year -> list of dicts
-teams.find_teams_by_championship_year(2024)     # year -> team full_name string
+# ID -> everything
+celtics = teams.find_team_name_by_id(1610612738)
+# Returns same dict as above
 
-# WNBA equivalents
-teams.get_wnba_teams()
-teams.find_wnba_team_by_abbreviation("LVA")
-# ... all the same functions with wnba_ prefix
+# Fuzzy search by name
+teams.find_teams_by_full_name("Celtics")      # regex search, returns list
+teams.find_teams_by_city("Boston")             # regex search, returns list
+teams.find_teams_by_nickname("Celtics")        # regex search, returns list
 ```
 
-**Team dict structure:**
-```python
-{
-    "id": 1610612738,           # NBA team ID (used in all API calls)
-    "full_name": "Boston Celtics",
-    "abbreviation": "BOS",     # 3-letter tricode
-    "nickname": "Celtics",
-    "city": "Boston",
-    "state": "Massachusetts",
-    "year_founded": 1946
-}
-```
-
-#### Players
-
-```python
-# src/nba_api/stats/static/players.py
-
-from nba_api.stats.static import players
-
-# All players (active + inactive)
-players.get_players()
-players.get_active_players()
-players.get_inactive_players()
-
-# Lookup functions (all accept regex patterns unless noted)
-players.find_player_by_id(203999)                # exact match -> single dict or None
-players.find_players_by_full_name("LeBron")      # regex -> list of dicts
-players.find_players_by_first_name("LeBron")     # regex -> list of dicts
-players.find_players_by_last_name("James")       # regex -> list of dicts
-
-# WNBA equivalents
-players.get_wnba_players()
-players.get_wnba_active_players()
-players.find_wnba_player_by_id(100001)
-# ... all the same functions with wnba_ prefix
-```
-
-**Player dict structure:**
-```python
-{
-    "id": 203999,              # NBA person ID (used in all API calls)
-    "full_name": "Nikola Jokic",
-    "first_name": "Nikola",
-    "last_name": "Jokic",
-    "is_active": True
-}
-```
-
-Note: Player name lookups automatically strip accents (e.g., searching "Jokic" matches "Jokić").
+There is also a `gameId` per game (`"0022500780"`) which is the best key for joining scoreboard data to box scores and play-by-play within this API.
 
 ---
 
-## 5. Data Format Details
+## 4. Gotchas and edge cases
 
-### 5.1 Stats API — V2 Legacy Format (tabular)
+### gameClock format is NOT always `PT##M##.##S`
 
-V2 endpoints return data as `resultSets` containing `headers` + `rowSet`:
-
-```json
-{
-    "resource": "leaguegamefinder",
-    "parameters": {"Season": "2025-26", ...},
-    "resultSets": [
-        {
-            "name": "LeagueGameFinderResults",
-            "headers": ["SEASON_ID", "TEAM_ID", "GAME_ID", "GAME_DATE", "MATCHUP", "WL", "PTS", ...],
-            "rowSet": [
-                ["22025", 1610612747, "0022501001", "2026-01-15", "LAL @ DEN", "L", 108, ...],
-                ...
-            ]
-        }
-    ]
-}
-```
-
-Use `get_normalized_dict()` to convert to list-of-dicts, or `dataset.get_data_frame()` for pandas.
-
-### 5.2 Stats API — V3 Format (nested JSON)
-
-V3 endpoints return nested JSON that the library parses via custom parsers in `src/nba_api/stats/endpoints/_parsers/`. The parsed output is presented through the same `DataSet` interface.
-
-### 5.3 Live API Format (nested JSON)
-
-Live endpoints return nested JSON directly. Access via `.get_dict()` or `.get_json()`.
-
-### 5.4 Output Methods (available on all endpoints)
-
-| Method | Returns | Notes |
+| Situation | `gameClock` value | How to handle |
 |---|---|---|
-| `endpoint.get_dict()` | `dict` | Raw API response |
-| `endpoint.get_json()` | `str` | JSON string |
-| `endpoint.get_response()` | `str` | Raw HTTP response text |
-| `endpoint.get_normalized_dict()` | `dict` | Normalized (V2 stats only) |
-| `endpoint.get_data_frames()` | `list[DataFrame]` | All datasets as DataFrames |
-| `dataset.get_dict()` | `dict` or `list` | Single dataset |
-| `dataset.get_json()` | `str` | Single dataset as JSON |
-| `dataset.get_data_frame()` | `DataFrame` | Single dataset (requires pandas) |
+| Mid-play | `"PT05M22.00S"` | Normal — parse with regex |
+| End of quarter / end of game | `"PT00M00.00S"` | Clock at zero. Check `period` and `gameStatus` to know why. |
+| Pre-game (gameStatus=1) | `""` (empty string) | **Critical gotcha.** Your parser MUST handle empty string. |
+| Between quarters | `"PT00M00.00S"` | Same as end-of-quarter. `gameStatus` is still `2`. |
+
+**Your clock parser must handle `""`.** The `expected_data` in `scoreboard.py:20` explicitly defines the default as `"gameClock": ""`.
+
+### Halftime is invisible at the status-code level
+
+There is no `gameStatus=4` for halftime. It's `gameStatus=2` (still "in progress") with `gameStatusText` containing `"Half"`. You must string-match:
+
+```python
+is_halftime = (game["gameStatus"] == 2 and "Half" in game["gameStatusText"])
+```
+
+### Overtime handling
+
+- `period` goes to `5` for OT1, `6` for OT2, etc.
+- `regulationPeriods` is always `4` (tells you where regulation ends)
+- `gameStatusText` becomes `"OT1 05:00"` etc.
+- `periods` array in team data will have entries with `"periodType": "OVERTIME"`
+- A game can theoretically have unlimited OT periods
+
+```python
+is_overtime = game["period"] > game["regulationPeriods"]
+```
+
+### Games spanning midnight (ET)
+
+The live scoreboard endpoint is `todaysScoreboard_00.json` — it returns games for **today's NBA calendar date**, which is based on Eastern Time. A 10:30 PM ET tip-off that goes to midnight will stay on the same scoreboard until it finishes. This is not a problem for polling — the game stays in the response until it's final.
+
+However: if you poll at 1:00 AM ET, you'll get **tomorrow's** empty scoreboard (or tomorrow's early games), and any just-finished late games from "yesterday" will be gone. If you need historical results, use `ScoreboardV3(game_date="2026-02-06")` instead.
+
+### Pre-game null/empty fields
+
+When `gameStatus == 1`:
+- `score` = `0` (int, not null) on both teams
+- `period` = `0` (int)
+- `gameClock` = `""` (empty string, NOT null, NOT "PT00M00.00S")
+- `periods` = `[]` (empty list, not null)
+- `inBonus` = `null`
+- `timeoutsRemaining` = `0`
+- `gameLeaders` fields are all zeroed: `personId=0`, `name=""`, `points=0`, etc.
+
+### Error handling — the library swallows HTTP errors
+
+**Critical for production.** Look at `src/nba_api/library/http.py:159-169`:
+
+```python
+response = self.get_session().get(
+    url=base_url,
+    params=parameters,
+    headers=request_headers,
+    proxies=proxies,
+    timeout=timeout,
+)
+url = response.url
+status_code = response.status_code
+contents = response.text
+```
+
+The library **does not check `status_code`**. A 403, 429, or 500 will be stored as-is. Then `clean_contents` in both HTTP subclasses replaces the NBA error JSON with XML:
+
+```python
+# src/nba_api/live/nba/library/http.py:23-25
+def clean_contents(self, contents):
+    if '{"Message":"An error has occurred."}' in contents:
+        return "<Error><Message>An error has occurred.</Message></Error>"
+    return contents
+```
+
+This means calling `.get_dict()` on an error response **will throw a `json.JSONDecodeError`** (because it's now XML). The `raise_exception_on_error` parameter exists but defaults to `False` and is never passed by any endpoint class.
+
+**You must wrap calls in try/except:**
+
+```python
+try:
+    scoreboard = ScoreBoard(timeout=10)
+    games = scoreboard.games.get_dict()
+except Exception:
+    # Network error, NBA.com down, rate limited, bad JSON, etc.
+    games = []
+```
+
+### No retry or rate limiting built in
+
+Confirmed by searching the entire `src/` tree: there are zero instances of `time.sleep`, `retry`, `backoff`, `rate_limit`, or `throttle`. You must implement your own.
+
+### ScoreboardV2 is broken
+
+Do NOT use `ScoreboardV2` for the 2025-26 season — line score data is broken. Use the **live** `ScoreBoard` for real-time, or `ScoreboardV3` for date-specific queries.
+
+### PlayByPlayV2 returns empty
+
+Use `PlayByPlayV3` (stats API) or the live `PlayByPlay` endpoint instead.
 
 ---
 
-## 6. Rate Limits & Throttling
-
-**No built-in rate limiting.** The library has no `time.sleep()`, request queuing, or throttle mechanisms.
-
-**NBA.com server-side behavior (undocumented):**
-- The APIs are public and generally permissive
-- Aggressive polling (e.g., multiple requests per second sustained) may result in temporary blocks (HTTP 403/429)
-- Requests without proper browser-like headers will be blocked
-
-**Recommendations for integration:**
-1. Add 1-second minimum delay between requests
-2. Implement exponential backoff on HTTP errors
-3. Cache responses (live scoreboard updates every ~15 seconds during games)
-4. Use the built-in session pooling (`requests.Session` is reused automatically)
-5. Pass a `proxy` (string or list for rotation) for high-volume usage
-
-**Proxy support:**
-```python
-# Single proxy
-ScoreBoard(proxy="http://proxy.example.com:8080")
-
-# Proxy rotation (randomly selected per request)
-ScoreBoard(proxy=["http://proxy1:8080", "http://proxy2:8080", "http://proxy3:8080"])
-```
-
----
-
-## 7. Code Snippets — Common Integration Patterns
-
-### Get today's live scoreboard
+## 5. Minimum code to poll live scores every 60 seconds
 
 ```python
-from nba_api.live.nba.endpoints import ScoreBoard
+"""Minimal live NBA score poller for Oddsfield."""
 
-scoreboard = ScoreBoard()
-games = scoreboard.games.get_dict()
-
-for game in games:
-    home = game["homeTeam"]
-    away = game["awayTeam"]
-    print(f"{away['teamCity']} {away['teamName']} ({away['score']}) "
-          f"@ {home['teamCity']} {home['teamName']} ({home['score']})")
-    print(f"  Status: {game['gameStatusText']} | Period: {game['period']} | Clock: {game['gameClock']}")
-    print(f"  Game ID: {game['gameId']}")
-```
-
-### Check if a game is live, upcoming, or final
-
-```python
-from nba_api.live.nba.endpoints import ScoreBoard
-
-scoreboard = ScoreBoard()
-
-for game in scoreboard.games.get_dict():
-    status = game["gameStatus"]
-    if status == 1:
-        print(f"UPCOMING: {game['gameStatusText']}")
-    elif status == 2:
-        print(f"LIVE: Q{game['period']} {game['gameClock']}")
-    elif status == 3:
-        print(f"FINAL: {game['homeTeam']['score']}-{game['awayTeam']['score']}")
-```
-
-### Parse the game clock
-
-```python
 import re
+import time
+from nba_api.live.nba.endpoints import ScoreBoard
 
-def parse_game_clock(clock_str):
-    """Parse ISO 8601 duration 'PT05M22.00S' -> (minutes, seconds)"""
+
+def parse_clock(clock_str):
+    """'PT05M22.00S' -> '5:22'. Empty string -> ''."""
     if not clock_str:
-        return (0, 0.0)
-    match = re.match(r'PT(\d+)M([\d.]+)S', clock_str)
-    if match:
-        return (int(match.group(1)), float(match.group(2)))
-    return (0, 0.0)
+        return ""
+    m = re.match(r"PT(\d+)M([\d.]+)S", clock_str)
+    if not m:
+        return clock_str  # return raw if unparseable
+    return f"{int(m.group(1))}:{int(float(m.group(2))):02d}"
+
+
+def get_game_state(game):
+    """Extract a normalized game state dict from a raw scoreboard game."""
+    status = game["gameStatus"]
+    status_text = game["gameStatusText"]
+
+    if status == 1:
+        state = "upcoming"
+    elif status == 3:
+        state = "final"
+    elif status == 2 and "Half" in status_text:
+        state = "halftime"
+    elif status == 2:
+        state = "live"
+    else:
+        state = "unknown"
+
+    return {
+        "game_id":       game["gameId"],
+        "state":         state,
+        "status_text":   status_text,
+        "period":        game["period"],
+        "clock":         parse_clock(game["gameClock"]),
+        "is_overtime":   game["period"] > game["regulationPeriods"],
+        "home_tricode":  game["homeTeam"]["teamTricode"],
+        "home_team_id":  game["homeTeam"]["teamId"],
+        "home_name":     f"{game['homeTeam']['teamCity']} {game['homeTeam']['teamName']}",
+        "home_score":    game["homeTeam"]["score"],
+        "away_tricode":  game["awayTeam"]["teamTricode"],
+        "away_team_id":  game["awayTeam"]["teamId"],
+        "away_name":     f"{game['awayTeam']['teamCity']} {game['awayTeam']['teamName']}",
+        "away_score":    game["awayTeam"]["score"],
+        "game_time_utc": game["gameTimeUTC"],
+    }
+
+
+def poll_scores():
+    """Poll live scores forever. Yields list of game states each cycle."""
+    while True:
+        try:
+            scoreboard = ScoreBoard(timeout=10)
+            games = scoreboard.games.get_dict()
+            yield [get_game_state(g) for g in games]
+        except Exception as e:
+            print(f"Error fetching scoreboard: {e}")
+            yield []
+        time.sleep(60)
+
 
 # Usage:
-minutes, seconds = parse_game_clock("PT05M22.00S")  # -> (5, 22.0)
+if __name__ == "__main__":
+    for game_states in poll_scores():
+        for g in game_states:
+            print(f"[{g['state']:>9}] {g['away_tricode']} {g['away_score']:>3} "
+                  f"@ {g['home_tricode']} {g['home_score']:>3}  "
+                  f"{'OT' + str(g['period'] - 4) if g['is_overtime'] else 'Q' + str(g['period']) if g['period'] > 0 else ''} "
+                  f"{g['clock']}")
+        print("---")
 ```
 
-### Get a specific date's scoreboard (Stats API)
-
-```python
-from nba_api.stats.endpoints import ScoreboardV3
-
-scoreboard = ScoreboardV3(game_date="2026-02-07")
-
-# Game headers as DataFrame
-games_df = scoreboard.game_header.get_data_frame()
-# Columns: gameId, gameCode, gameStatus, gameStatusText, period, gameClock, gameTimeUTC, ...
-
-# Line scores as DataFrame
-scores_df = scoreboard.line_score.get_data_frame()
-# Columns: gameId, teamId, teamCity, teamName, teamTricode, wins, losses, score, ...
-```
-
-### Look up a team and get their game log
-
-```python
-from nba_api.stats.static import teams
-from nba_api.stats.endpoints import TeamGameLog
-
-# Find team
-celtics = teams.find_team_by_abbreviation("BOS")
-team_id = celtics["id"]  # 1610612738
-
-# Get season game log
-game_log = TeamGameLog(team_id=team_id, season="2025-26")
-df = game_log.team_game_log.get_data_frame()
-# Columns: Team_ID, Game_ID, GAME_DATE, MATCHUP, WL, W, L, W_PCT, MIN, FGM, FGA, ...
-```
-
-### Look up a player and get career stats
-
-```python
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import PlayerCareerStats
-
-# Find player
-jokic = players.find_players_by_full_name("Nikola Jokic")[0]
-player_id = jokic["id"]  # 203999
-
-# Get career stats
-career = PlayerCareerStats(player_id=player_id)
-df = career.season_totals_regular_season.get_data_frame()
-# Columns: PLAYER_ID, SEASON_ID, LEAGUE_ID, TEAM_ID, GP, GS, MIN, FGM, FGA, ...
-```
-
-### Get live box score for a specific game
-
-```python
-from nba_api.live.nba.endpoints import BoxScore
-
-box = BoxScore(game_id="0022500780")
-
-# Game status
-details = box.game_details.get_dict()
-print(f"Status: {details['gameStatusText']}, Period: {details['period']}")
-
-# Team scores
-home = box.home_team_stats.get_dict()
-away = box.away_team_stats.get_dict()
-print(f"{home['teamName']}: {home['score']}  {away['teamName']}: {away['score']}")
-
-# Player stats
-for player in box.home_team_player_stats.get_dict():
-    stats = player["statistics"]
-    print(f"  {player['name']}: {stats['points']}pts {stats['reboundsTotal']}reb {stats['assists']}ast")
-```
-
-### Determine halftime
-
-```python
-# The API does not have a dedicated "halftime" status code.
-# Halftime is indicated by gameStatus=2 with gameStatusText containing "Half"
-# or by period=2 with gameClock="PT00M00.00S"
-
-def is_halftime(game):
-    """Check if game is at halftime."""
-    if game["gameStatus"] != 2:
-        return False
-    status_text = game.get("gameStatusText", "")
-    if "Half" in status_text:
-        return True
-    # Also check: period 2 ended, period 3 not started
-    if game["period"] == 2 and game["gameClock"] == "PT00M00.00S":
-        return True
-    return False
-```
+**Important notes for production:**
+- Each `ScoreBoard()` call is a single HTTP GET. The CDN response is typically ~5-15KB.
+- The CDN updates roughly every 10-15 seconds during live games. Polling faster than 30s is wasteful.
+- For a betting dashboard, 60s is fine for score display. If you need sub-minute for live betting triggers, poll every 15-30s.
+- The `requests.Session` is reused automatically across calls (class-level singleton at `NBAHTTP._session`).
+- If you need more detail on a specific game during play, call `BoxScore(game_id=game_id)` — same live API, game-specific.
 
 ---
 
-## 8. NBA Team IDs Reference
+## 6. Does this repo store any data in a database?
 
-All 30 NBA teams and their IDs (used across all endpoints):
+**No.** Confirmed by searching the entire `src/` tree for `sqlite`, `postgres`, `mysql`, `mongo`, `database`, `db_`, `.db`, `engine =`, `Session(`, `create_all`, and `CREATE TABLE`. The only hit is `requests.Session()` in the HTTP layer (connection pooling, not database).
 
-| ID | Abbreviation | Team |
-|---|---|---|
-| 1610612737 | ATL | Atlanta Hawks |
-| 1610612738 | BOS | Boston Celtics |
-| 1610612751 | BKN | Brooklyn Nets |
-| 1610612766 | CHA | Charlotte Hornets |
-| 1610612741 | CHI | Chicago Bulls |
-| 1610612739 | CLE | Cleveland Cavaliers |
-| 1610612742 | DAL | Dallas Mavericks |
-| 1610612743 | DEN | Denver Nuggets |
-| 1610612765 | DET | Detroit Pistons |
-| 1610612744 | GSW | Golden State Warriors |
-| 1610612745 | HOU | Houston Rockets |
-| 1610612754 | IND | Indiana Pacers |
-| 1610612746 | LAC | LA Clippers |
-| 1610612747 | LAL | Los Angeles Lakers |
-| 1610612763 | MEM | Memphis Grizzlies |
-| 1610612748 | MIA | Miami Heat |
-| 1610612749 | MIL | Milwaukee Bucks |
-| 1610612750 | MIN | Minnesota Timberwolves |
-| 1610612740 | NOP | New Orleans Pelicans |
-| 1610612752 | NYK | New York Knicks |
-| 1610612760 | OKC | Oklahoma City Thunder |
-| 1610612753 | ORL | Orlando Magic |
-| 1610612755 | PHI | Philadelphia 76ers |
-| 1610612756 | PHX | Phoenix Suns |
-| 1610612757 | POR | Portland Trail Blazers |
-| 1610612758 | SAC | Sacramento Kings |
-| 1610612759 | SAS | San Antonio Spurs |
-| 1610612761 | TOR | Toronto Raptors |
-| 1610612762 | UTA | Utah Jazz |
-| 1610612764 | WAS | Washington Wizards |
+This is a **pure stateless client library**. Every call is a fresh HTTP GET. There is:
+- No caching layer
+- No local storage
+- No persistence
+- No write operations
 
----
+The only "stored" data is the bundled static player/team lookup tables in `src/nba_api/stats/library/data.py` (~360KB of hardcoded Python lists). These are read-only and baked into the package at release time.
 
-## 9. Known Issues & Deprecations
-
-| Issue | Details | Workaround |
-|---|---|---|
-| `ScoreboardV2` broken | Line score data broken for 2025-26 season | Use `ScoreboardV3` |
-| `PlayByPlayV2` empty | Returns empty JSON | Use `PlayByPlayV3` or live `PlayByPlay` |
-| `LeagueGameFinder` `game_id_nullable` | Parameter silently ignored by NBA.com | Filter results client-side |
-| `TeamDashboardByGeneralSplits` plus/minus | `plus_minus='Y'` returns incorrect values | Use `plus_minus='N'` (default) |
-| Static data staleness | Player/team data updated manually per release | Check package version for latest data |
-
----
-
-## 10. Game ID Format
-
-NBA game IDs follow this pattern: `00XYYZZZZ`
-
-| Segment | Meaning |
-|---|---|
-| `00` | League (`00` = NBA, `10` = WNBA, `20` = G-League) |
-| `X` | Season type (`1` = preseason, `2` = regular, `3` = all-star, `4` = playoffs) |
-| `YY` | Season year suffix (e.g., `25` for 2025-26) |
-| `ZZZZ` | Sequential game number |
-
-Example: `0022500180` = NBA (`00`), regular season (`2`), 2025-26 (`25`), game #180 (`00180`).
-
----
-
-## 11. Season Format
-
-Season strings use the format `"YYYY-YY"`: e.g., `"2025-26"`.
-
-The library tracks the current season in `nba_api.stats.library.parameters.Season`:
-```python
-from nba_api.stats.library.parameters import Season
-print(Season.current_season)  # "2025-26"
-print(Season.default)         # "2025-26"
-```
-
----
-
-## 12. HTTP Internals
-
-The HTTP layer is implemented in `src/nba_api/library/http.py`:
-
-```python
-class NBAHTTP:
-    _session = None  # Class-level persistent session
-
-    @classmethod
-    def get_session(cls):
-        """Returns a reusable requests.Session for connection pooling."""
-        if cls._session is None:
-            cls._session = requests.Session()
-        return cls._session
-
-    @classmethod
-    def set_session(cls, session):
-        """Replace the session (useful for testing or custom config)."""
-        cls._session = session
-
-    def send_api_request(self, endpoint, parameters, referer=None,
-                         proxy=None, headers=None, timeout=None,
-                         raise_exception_on_error=False):
-        # Sorts parameters alphabetically (required by some NBA endpoints)
-        # Supports proxy rotation from a list
-        # Returns NBAResponse object
-        ...
-```
-
-Two subclasses:
-- `NBAStatsHTTP` (`src/nba_api/stats/library/http.py`) — targets `stats.nba.com`
-- `NBALiveHTTP` (`src/nba_api/live/nba/library/http.py`) — targets `cdn.nba.com`
-
-Both override `clean_contents()` to handle NBA.com error responses.
-
-**Custom session injection (for testing or middleware):**
-```python
-import requests
-from nba_api.library.http import NBAHTTP
-
-# Inject a custom session with retry logic
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(max_retries=3)
-session.mount("https://", adapter)
-NBAHTTP.set_session(session)
-```
+If Oddsfield needs to cache/store NBA data, that's entirely your responsibility. The library will happily re-fetch the same data on every call.
